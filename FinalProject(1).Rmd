@@ -1,0 +1,382 @@
+---
+title: "Research of CES based on MRP model: Could it Make a Difference?"
+output: pdf_document
+author: "Fei Yang, ID: 1004847696"
+date: "December 20, 2020"
+---
+
+```{r setup,include=FALSE,echo=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+#install.packages("devtools")
+#devtools::install_github("hodgettsp/cesR")
+library(cesR)
+library(tidyverse)
+library(janitor)
+library(visdat)
+library(skimr)
+get_ces("ces2019_web")
+get_decon()
+load('gss.RData')
+library(DataExplorer)
+```
+
+Keywords: MRP model, CES, GSS, Logistic Regression
+
+The code and data supporting this analysis is available at https://github.com/yangfe19/STA304_Final_Project
+
+## Abstract
+
+All kinds of polls try to tell people that their results have the most credibility. The conclusion of an investigation is reliable, in fact, it means that it is extremely representative of the overall political orientation of voters. In this project, what we have to do is to use non-representative data, or even ordinary incomplete data, to have an accurate and credible estimate of the results of the general election. In this project, we used `CES` and `GSS` data as the survey data and census data used in the analysis. After data cleaning and re-coding, we used the multi-level logistic regression with post-stratification (MRP) model to estimate the probability of victory for the Conservative Party and the Liberal Party. The final result shows that the overall voting probability of the Conservatives is around 0.5559 and the overall voting probability of the Liberals is around 0.5597, slightly higher than the Conservatives', which proved to be true in reality.
+
+## Introduction
+
+Are all investigations credible? Are all sampling results reasonable? Are all analysis results unbiased? Is there sufficient evidence for all causality? It is great important to investigate if the polling in modern time, is representative and built around the idea that every individual in a particular target population has the same probability of voting and being sampled. In the recent two U.S. elections, public opinion surveys often show huge deviations. Even the controversy about mailing votes in this year's election (which will not be discussed in this report) is a manifestation of the bias being amplified.
+
+During the U.S. presidential election of 1936, Literary Digest, a magazine, had polled a mail-in survey which attract about two million people to response. Even the sample size is large enough that could generally give a reliable predict. However, it failed to predict the election result in 1936 American election. The main reason that cause the failure is the samples that the Literary Digest got are highly biased. To be more specific, the sample are all from the people who are interest in the magazine. For example, they are from auto or telephone owners and magazine’s subscribers which cannot represent the Roosevelt’s core candidate. However, another investigation has use smaller sample size but representative, and it correctly predicts the election.
+
+Therefore, in this report, it can be proved that using reliable statistical methodology, using small or non-representative data of polling, can yield reliable and even accurate outcome of the election. First of all, this report will clean the original data based on the methodology of data processing; after obtaining data that is more conducive to analysis, this report shows the basic situation of the data, including the distribution of each attribute; then, the report build an MRP model based on CES and a post-stratification we obtain; finally, the report gives more scenarios where the model may be applicable based on the parameter estimation results and adjustments of the model, and also summarizes the work.
+
+## Methodology
+
+In the entire project, we certainly need more than one methodology to support our analysis. Here we will introduce the methodology used in the project according to the logical sequence of analysis.
+
+### Handling the Missing Values
+
+This project use `decon` data as our main data containing non-exhaustive information under the name `decon` consisting of 21 variables with renamed columns from the demographics, ideology, and economy sections of the 2019 CES online survey.
+
+For the census data used to perform modeling, we choose the cleaned `GSS` data (the Canadian General Social Survey) used in problem set 2 to be the census data. Before modeling, we must specify the variables to be included in. First let's see the status of missing data shown in *Figure 1* :
+
+```{r,echo=FALSE}
+plot_missing(decon,
+             title = 'Figure 1 : Status of Missing Data in decon Dataset')
+```
+
+For variables like `ces_code`, `yob`, `lr`,`lr_bef`, `lr_aft`, they can't help our analysis, so we delete them. And for variables like `citizenship`, `econ_self/fed/retro` and `religion`, the census data have no specific information about it, so we also delete them. For variables like `language_abgl` and `sexuality_text`, it has large proportion of missing value, so we delete them.
+
+```{r,include=FALSE,echo=FALSE}
+decon$ces_code<-NULL
+decon$citizenship<-NULL
+decon$yob<-NULL
+decon$lr<-NULL
+decon$lr_bef<-NULL
+decon$lr_aft<-NULL
+decon$citizenship<-NULL
+decon$econ_fed<-NULL
+decon$econ_retro<-NULL
+decon$econ_self<-NULL
+decon$religion<-NULL
+decon$sexuality_selected<-NULL
+decon$sexuality_text<-NULL
+decon$language_abgl<-NULL
+```
+
+And for the language variable and income variable, we need to combine every two variable to one.
+```{r,include=FALSE}
+decon <- decon %>% 
+  mutate(language_eng = if_else(is.na(language_eng) == T, 
+                                if_else(is.na(language_fr) == T,'Neither English nor French','French only'), 
+                                if_else(is.na(language_fr) == T,'English only','Both English and French')))
+```
+
+```{r,include=FALSE,echo=FALSE}
+colnames(decon)[4]<-'language'
+decon$language_fr<-NULL
+```
+
+As we go through the variable income, we check the break points (categories) and got:
+```{r,include=FALSE}
+table(decon$income_cat)
+table(gss$income_family)
+```
+
+Although both are variables that describe income, and the lack of missing values can be achieved by merging variables, there are big differences in the classification of variables, that is, the breakpoints are basically not coincident, and there are still a lot of people who are unwilling to disclose the situation in the census data. Respondents. In order to prevent model errors caused by improper handling of variables, this project chooses to exclude the variable income.
+```{r,include=FALSE,echo=FALSE}
+decon$income<-NULL
+decon$income_cat<-NULL
+decon$language<-as.factor(decon$language)
+```
+
+At last, we add their political status from the `ces2019_web` data. From the survey cookbook, we know the Liberal refers to 1, and the Conservative is 2. We give the voting status to the separated dummy variable.
+```{r,include=FALSE}
+table(ces2019_web$cps19_votechoice)
+```
+
+```{r,include=FALSE,echo=FALSE}
+decon$voteLib<-0
+decon$voteCon<-0
+decon <- decon %>% 
+  mutate(voteLib = if_else(ces2019_web$cps19_votechoice == 1, 1, 0),
+         voteCon = if_else(ces2019_web$cps19_votechoice == 2, 1, 0))
+decon <- decon %>% 
+  mutate(voteLib = if_else(is.na(voteLib)==T, 0, voteLib),
+         voteCon = if_else(is.na(voteCon)==T, 0, voteCon))
+```
+
+After checking the current data structure of non-exhaustive one, we can say the preliminary data cleaning work has been completed.
+```{r,include=FALSE,echo=TRUE}
+str(decon)
+```
+
+
+### Data Wrangling
+
+Now we turn to the survey data. This project selects variables that match the `decon` data set, and further matches the variable names and corresponding classifications of the two data sets to assist the subsequent establishment of the MRP model.
+```{r,include=FALSE,echo=FALSE}
+# remove(cw_statements,labels_raw_tibble,raw_data,variable_descriptions,age_diff,dict,labels_raw,main_act,add_cw_text)
+# remove(ces2019_web)
+```
+
+```{r,include=FALSE}
+gss <- gss %>%
+  select(sex,province,education,language_knowledge,main_activity,marital_status)
+# rename
+decon <- decon %>%
+  clean_names() %>%
+  rename(province=province_territory)
+gss <- gss %>%
+  clean_names() %>%
+  rename(gender=sex,
+         language=language_knowledge,
+         employment=main_activity,
+         marital=marital_status)
+# gender
+decon <- decon %>%
+  mutate(gender=ifelse(
+    gender=='A man','Male',
+      ifelse(gender=='A woman','Female',NA)))
+# province
+decon$province <- decon %>% 
+  mutate(province = case_when(
+    province=="Alberta" ~ "Alberta",
+    province=="British Columbia" ~ "British Columbia",
+    province=="Manitoba" ~ "Manitoba",
+    province=="New Brunswick" ~ "New Brunswick",
+    province=="Newfoundland and Labrador" ~ "Newfoundland and Labrador", 
+    province=="Nova Scotia" ~ "Nova Scotia", 
+    province=="Ontario" ~ "Ontario", 
+    province=="Prince Edward Island" ~ "Prince Edward Island", 
+    province=="Quebec" ~ "Quebec",
+    province=="Saskatchewan" ~ "Saskatchewan",
+    TRUE~ "NA")) %>% 
+  select(province) %>% 
+  pull()
+# education
+gss$education <- gss %>% 
+  mutate(education = case_when(
+    education=="Bachelor's degree (e.g. B.A., B.Sc., LL.B.)" ~ "Bachelor's degree",
+    education=="College, CEGEP or other non-university certificate or di..." ~ "College",
+    education=="High school diploma or a high school equivalency certificate" ~ "High school",
+    education=="Less than high school diploma or its equivalent" ~ "Under high school",
+    education=="Trade certificate or diploma" ~ "Professional degree", 
+    education=="University certificate or diploma below the bachelor's level" ~ "College", 
+    education=="University certificate, diploma or degree above the bach..." ~ "College", 
+    TRUE~ "NA")) %>% 
+  select(education) %>% 
+  pull()
+
+decon$education <- decon %>% 
+  mutate(education = case_when(
+    education=="Bachelor's degree" ~ "Bachelor's degree",
+    education=="Some university" ~ "College",
+    education=="Some technical, community college, CEGEP, College Classique" ~ "College",
+    education=="Completed technical, community college, CEGEP, College Classique" ~ "College",
+    education=="No schooling" ~ "Under high school",
+    education=="Some elementary school" ~ "Under high school",
+    education=="Completed elementary school" ~ "Under high school",
+    education=="Some secondary/ high school" ~ "High school",
+    education=="Completed secondary/ high school" ~ "High school",
+    education=="Professional degree or doctorate" ~ "Professional degree", 
+    education=="Master's degree" ~ "Professional degree", 
+    education=="University certificate, diploma or degree above the bach..." ~ "College", 
+    TRUE~ "NA")) %>% 
+  select(education) %>% 
+  pull()
+# language
+gss <- gss %>%
+  mutate(language=ifelse(
+    language%in%names(table(decon$language)),language,NA))
+# employment
+table(gss$employment)
+table(decon$employment)
+
+gss$employment<-NULL
+decon$employment<-NULL
+```
+
+The proportion of missing value at `employment` in `gss` is too large, we have to delete them. 
+
+```{r,include=FALSE}
+# marital
+gss$marital <- gss %>% 
+  mutate(marital = case_when(
+    marital=="Divorced" ~ "Divorced",
+    marital=="Living common-law" ~ "Living with a partner",
+    marital=="Married" ~ "Married",
+    marital=="Separated" ~ "Separated",
+    marital=="Single, never married" ~ "Never Married", 
+    marital=="Widowed" ~ "Widowed",
+    TRUE~ "NA")) %>% 
+  select(marital) %>% 
+  pull()
+
+decon$marital <- decon %>% 
+  mutate(marital = case_when(
+    marital=="Divorced" ~ "Divorced",
+    marital=="Living with a partner" ~ "Living with a partner",
+    marital=="Married" ~ "Married",
+    marital=="Separated" ~ "Separated",
+    marital=="Never Married" ~ "Never Married", 
+    marital=="Widowed" ~ "Widowed",
+    TRUE~ "NA")) %>% 
+  select(marital) %>% 
+  pull()
+
+```
+
+At last, the characters variables will be transformed to factors to build MRP model.
+
+
+### Build Multi-level Model
+
+As the precondition of the MRP model, we assume the `gss` data can represent the citizen status of overall Canada. After deleting all the `NA` value, we create the data frame about grouping different cells, in order to perform the following post-Stratification.
+```{r,include=FALSE,echo=FALSE}
+decon <- decon %>%
+  filter(education!='NA',
+         marital!='NA',
+         province!='NA')
+gss <- gss %>%
+  filter(education!='NA',
+         marital!='NA')
+
+survey_data<-na.omit(decon)
+census_data<-na.omit(gss)
+```
+
+```{r,include=FALSE}
+gss$gender<-as.factor(gss$gender)
+gss$province<-as.factor(gss$province)
+gss$education<-as.factor(gss$education)
+gss$language<-as.factor(gss$language)
+gss$marital<-as.factor(gss$marital)
+decon$gender<-as.factor(decon$gender)
+decon$province<-as.factor(decon$province)
+decon$education<-as.factor(decon$education)
+decon$language<-as.factor(decon$language)
+decon$marital<-as.factor(decon$marital)
+```
+
+```{r,include=FALSE}
+census_data <- census_data %>%
+  count(gender,education,province,language,marital) %>% 
+  group_by(gender,education,province,language,marital)
+```
+
+When we use the MRP model, the first step is to establish a corresponding multi-level regression model. Here we use two dummy variables of "whether voted for this party", and describe the probability of different groups of people voting for two parties by establishing a logistic regression model.
+
+Specifically, we established these two models:
+
+$$
+\log\frac{p_{voteCON}}{1-p_{voteCON}} = \beta_0 + \beta_1X_{gender} + \beta_2X_{province}+ \beta_3X_{education} + \beta_4X_{language}+ \beta_5X_{marital}
+$$
+and
+$$
+\log\frac{p_{voteLIB}}{1-p_{voteLIB}} = \beta_0 + \beta_1X_{gender} + \beta_2X_{province}+ \beta_3X_{education} + \beta_4X_{language}+ \beta_5X_{marital}
+$$
+
+in which different p represents different probability of voting this party, and $\beta_0$ represents the intercept of the model. $\beta_1$, $\beta_2$, $\beta_3$, $\beta_4$ and $\beta_5$ represent the difference between categories inside the specific variable. All the steps are coded in R language.
+
+```{r,include=FALSE}
+glm_CON <- glm(vote_con~gender+province+education+language+marital,data = survey_data)
+summary(glm_CON)
+glm_LIB <- glm(vote_lib~gender+province+education+language+marital,data = survey_data)
+summary(glm_LIB)
+```
+
+According to the output of two logistic regression model, all variables included are significant in 99.9% confidence level for the p-value lower than 0.001. In other words, at least one of the level of these categorical variables are significant in 99.9% confidence level. At the same time, the summary output tells us both model is reliable and significant.
+
+
+### Perform Post-Statification
+
+And it comes to the post-stratification part. To investigate the probability of people who attempted to select different parties, we can use the technique of post-stratification to adjust the overall probability to predict for all Canadian citizen. As we have assured the synergy between data, although we just select five representative variables, post-stratification is used to estimate investigation on survey sampling which is always based on population. It reduces the variance of the estimate to give out more precise results. If people apply this technique on their models correctly, it not only reduces the variance of the estimate but also raise the confidence interval of one prediction. By multiplying the numbers of groups for each variable, the results demonstrate there are 1074 cells in this investigation. Then we will estimate the proportion of people in each gender, province, education, language and marital status. Finally, we will calculate each proportion estimate by the respective population size of that bin and sum those values and divide that by the entire population size.
+
+```{r, include=FALSE}
+
+census_data$CON_estimate <-
+  glm_CON %>%
+  predict(newdata = census_data)
+
+census_data$CON_estimate <-
+  exp(census_data$CON_estimate)/(1+exp(census_data$CON_estimate))
+
+census_data$LIB_estimate <-
+  glm_LIB %>%
+  predict(newdata = census_data)
+
+census_data$LIB_estimate <-
+  exp(census_data$LIB_estimate)/(1+exp(census_data$LIB_estimate))
+
+(CON_predict <- sum(census_data$n*census_data$CON_estimate)/sum(census_data$n))
+(LIB_predict <- sum(census_data$n*census_data$LIB_estimate)/sum(census_data$n))
+```
+
+## Results
+
+Based on the multi-level logistic models and post-stratification techniques, we estimate that the overall probability of voters in favour of voting for the Conservative Party to be 0.5559, the overall probability of voters in favour of voting for the Liberal Party to be 0.5597. This is based off our post-stratification analysis of the proportion of voters modeled by an MRP model, which accounted for the gender, the living province, the education status, the language they speak and the marital status of the respondent.
+
+This is as same as the survey results we got in the data of survey, and also it is the same as the final election results of 2019. The Liberals did get the majority and won the final victory, while the Conservatives lost in the end.
+
+To be more specific inside different groups, here is a scatter plot labeled as *Figure 2* of the x axis representing the Conservatives voting probability and the y axis representing the Liberals voting probability and the point size representing the group number of a specific cell.
+
+```{r,echo=FALSE}
+ggplot(census_data,aes(x=CON_estimate,y=LIB_estimate,size=n,color=n))+
+  geom_point()+
+  xlim(0.45,0.65)+
+  ylim(0.45,0.65)+
+  labs(
+    x='Conservatives voting probability',
+    y='Liberals voting probability',
+    title = 'Figure 2 : Scatter Plot of Cell Size vs Voting Probabilities'
+  )
+```
+
+It can be seen that the cell group with large number of people has neutral attitude in politics, while some groups have distinct political leanings. Still, according to the image, it can be seen that more groups tend to support the Liberals in general. Because the scatter plot shows that there are more points near the diagonal that are more biased towards the Liberals.
+
+## Discussion
+
+* Summary
+
+In summary, we discuss the 2019 Canadian federal election using the multiple level logistic regression with the post-stratification model. Logistic regression models could help us forecast the choice of citizens more accurately. Since Canadian involves all kinds of groups which can be seen as cells, the MRP model here can properly use its advantage of predicting the final result using the non-representative data (which is the `decon` data set here), finally proved to be correct. 
+
+* Conclusion
+
+After long-term data cleaning and wrangling more importantly, using the models estimating the vote probability from census data, the results show the overall voting probability of the Conservatives is around 0.5559, and the overall voting probability of the Liberals is around 0.5597 which is slightly higher than the Conservatives'. Hence, our prediction is that The Liberals would win the 2019 Canadian Federal Election, which is correct.
+
+
+* Weaknesses
+
+The weaknesses of our project come from three parts mainly:
+1. The data inconsistency. The survey data we used and the census data showed a lot of missing on many key issues, or the discontinuities of continuous variables were inconsistent. This had a great impact on our analysis, and we had to delete some important indicators ( For example, religion, age, occupation, etc.) in exchange for consistency between data.
+
+2. The model is not perfect. We can see that although the variables entered into the model are significant, the residuals of the two models are not small, which brings bias to our prediction results, making our estimates lack confidence. Although the MRP model minimizes the impact of such deviations on the results, we still do not have full confidence.
+
+3. The number of samples in the census data is smaller than the number of samples in the survey data. Obviously, we can see that the number of samples in the census data is much smaller than the number of samples in the survey data. This contrasts with the fact that we use a small number of (but highly representative and credible) survey samples and use complete census data to compare The plan for forecasting the overall population is not consistent. We can only expect that such census data can indeed represent the overall level.
+
+
+* Next Steps
+
+The improvement of the model will focus on the problems mentioned above. First of all, the synergy between survey data and census data should be greatly strengthened. The results of key issues need to greatly reduce missing values. When recording continuous variables, either record the exact number or unify the segments. Subsequently, we need to improve the stability and reliability of the model. By using different parameter adjustment methods, the residual error of the model is minimized, and the accuracy of prediction is increased. Finally, we need to ensure that the census data is highly representative. Either increase the number of observations or ask experts to verify the reliability of the census data and increase the reliability through professional recommendations, thereby increasing the credibility of our model.
+
+## Reference
+
+Dataset: General Social Survey, Cycle 31: 2017: Family
+
+GitHub, https://github.com/
+
+Gosnell, H. F. (1937). How accurate were the polls? Public Opinion Quarterly, 1, 97–105.
+
+Squire, P. (1988). Why the 1936 Literary Digest poll failed. Public Opinion Quarterly, 52, 125–133.
+
+Team, M. (2020). U.S. CENSUS DATA FOR SOCIAL, ECONOMIC, AND HEALTH RESEARCH. Re- trieved November 01, 2020, https://usa.ipums.org/usa/index.shtml.
+
+Wang, W., et al., Forecasting elections with non-representative polls. International Journal of Forecasting (2014)
+
